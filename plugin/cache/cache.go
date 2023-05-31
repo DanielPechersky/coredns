@@ -76,8 +76,33 @@ func New() *Cache {
 	}
 }
 
+func findECSOption(m *dns.Msg) *dns.EDNS0_SUBNET {
+	opt := m.IsEdns0()
+	if opt == nil {
+		return nil
+	}
+	for _, o := range opt.Option {
+		o, ok := o.(*dns.EDNS0_SUBNET)
+		if ok {
+			return o
+		}
+	}
+	return nil
+}
+
+// responseIsIpSpecific returns true if the response would be different if the
+// client IP address was different. This is the case if the response contains
+// an EDNS Client Subnet record with a non-zero scope: the response is
+// only intended for a specific network range.
+func responseIsIpSpecific(m *dns.Msg) bool {
+	ecs := findECSOption(m)
+	return ecs != nil && ecs.SourceScope != 0
+}
+
 // key returns key under which we store the item, -1 will be returned if we don't store the message.
 // Currently we do not cache Truncated, errors zone transfers or dynamic update messages.
+// We also don't cache ip-specific responses because they are only valid for a
+// specific IP range while we may get queries from other ranges.
 // qname holds the already lowercased qname.
 func key(qname string, m *dns.Msg, t response.Type, do bool) (bool, uint64) {
 	// We don't store truncated responses.
@@ -86,6 +111,10 @@ func key(qname string, m *dns.Msg, t response.Type, do bool) (bool, uint64) {
 	}
 	// Nor errors or Meta or Update.
 	if t == response.OtherError || t == response.Meta || t == response.Update {
+		return false, 0
+	}
+
+	if responseIsIpSpecific(m) {
 		return false, 0
 	}
 

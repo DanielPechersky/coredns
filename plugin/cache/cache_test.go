@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 type cacheTestCase struct {
 	test.Case                    // the expected message coming "out" of cache
 	in                 test.Case // the test message going "in" to cache
+	edns0              []dns.EDNS0
 	AuthenticatedData  bool
 	RecursionAvailable bool
 	Truncated          bool
@@ -230,6 +232,65 @@ var cacheTestCases = []cacheTestCase{
 		},
 		shouldCache: true,
 	},
+	{
+		// Test responses where the ECS source scope is not 0 don't get cached
+		in: test.Case{
+			Qname: "cdn.example.org.", Qtype: dns.TypeA,
+		},
+		Case: test.Case{
+			Qname: "cdn.example.org.", Qtype: dns.TypeA,
+		},
+		edns0: []dns.EDNS0{
+			&dns.EDNS0_SUBNET{
+				Code:          dns.EDNS0SUBNET,
+				Family:        1,
+				SourceNetmask: 24,
+				SourceScope:   24,
+				Address:       net.IPv4(127, 0, 0, 1),
+			},
+		},
+		shouldCache: false,
+	},
+	{
+		// Test responses where the ECS source scope is 0 get cached
+		in: test.Case{
+			Qname: "cdn.example.org.", Qtype: dns.TypeA,
+		},
+		Case: test.Case{
+			Qname: "cdn.example.org.", Qtype: dns.TypeA,
+		},
+		edns0: []dns.EDNS0{
+			&dns.EDNS0_SUBNET{
+				Code:          dns.EDNS0SUBNET,
+				Family:        1,
+				SourceNetmask: 24,
+				SourceScope:   0,
+				Address:       net.IPv4(127, 0, 0, 1),
+			},
+		},
+		shouldCache: true,
+	},
+	{
+		// Test responses where the ECS source scope is not 0 and DNSSEC is set don't get cached
+		in: test.Case{
+			Qname: "cdn.example.org.", Qtype: dns.TypeA,
+			Do: true,
+		},
+		Case: test.Case{
+			Qname: "cdn.example.org.", Qtype: dns.TypeA,
+			Do: true,
+		},
+		edns0: []dns.EDNS0{
+			&dns.EDNS0_SUBNET{
+				Code:          dns.EDNS0SUBNET,
+				Family:        1,
+				SourceNetmask: 24,
+				SourceScope:   24,
+				Address:       net.IPv4(127, 0, 0, 1),
+			},
+		},
+		shouldCache: false,
+	},
 }
 
 func cacheMsg(m *dns.Msg, tc cacheTestCase) *dns.Msg {
@@ -240,6 +301,15 @@ func cacheMsg(m *dns.Msg, tc cacheTestCase) *dns.Msg {
 	m.Truncated = tc.Truncated
 	m.Answer = tc.in.Answer
 	m.Ns = tc.in.Ns
+
+	if tc.edns0 != nil {
+		opt := m.IsEdns0()
+		if opt == nil {
+			opt = test.OPT(4096, false)
+			m.Extra = append(m.Extra, opt)
+		}
+		opt.Option = tc.edns0
+	}
 	// m.Extra = tc.in.Extra don't copy Extra, because we don't care and fake EDNS0 DO with tc.Do.
 	return m
 }
